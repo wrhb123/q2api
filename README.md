@@ -352,7 +352,8 @@ with client.messages.stream(
 - **生产模式**（`OPENAI_KEYS` 已设置）：必须提供白名单中的 key
 
 ### 账号选择策略
-- 从所有 `enabled=1` 的账号中**随机选择**
+- **默认策略**：从所有 `enabled=1` 的账号中**随机选择**
+- **Lazy 号池策略**：启用后，从排序后的前 N 个账号中随机选择，提高性能和账号利用率
 - API Key 不映射到特定账号（与 AWS 账号解耦）
 - 无可用账号时返回 401
 
@@ -424,6 +425,11 @@ v2/
 | `ENABLE_CONSOLE` | 管理控制台开关 | `"true"` | `"false"` |
 | `ADMIN_PASSWORD` | 管理控制台登录密码 | `"admin"` | `"your-secure-password"` |
 | `PORT` | 服务端口 | 8000 | `8080` |
+| `LAZY_ACCOUNT_POOL_ENABLED` | 是否启用 Lazy 号池 | `"false"` | `"true"` |
+| `LAZY_ACCOUNT_POOL_SIZE` | Lazy 号池大小（聊天） | `20` | `50` |
+| `LAZY_ACCOUNT_POOL_REFRESH_OFFSET` | Lazy 号池刷新偏移量 | `10` | `20` |
+| `LAZY_ACCOUNT_POOL_ORDER_BY` | Lazy 号池排序字段 | `"created_at"` | `"success_count"` |
+| `LAZY_ACCOUNT_POOL_ORDER_DESC` | Lazy 号池是否降序 | `"false"` | `"true"` |
 
 ### 数据库结构
 

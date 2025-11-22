@@ -204,7 +204,15 @@ async def _refresh_stale_tokens():
                 print("[Error] Database not initialized, skipping token refresh cycle.")
                 continue
             now = time.time()
-            rows = await _db.fetchall("SELECT id, last_refresh_time FROM accounts WHERE enabled=1")
+            
+            if LAZY_ACCOUNT_POOL_ENABLED:
+                limit = LAZY_ACCOUNT_POOL_SIZE + LAZY_ACCOUNT_POOL_REFRESH_OFFSET
+                order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
+                query = f"SELECT id, last_refresh_time FROM accounts WHERE enabled=1 ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction} LIMIT {limit}"
+                rows = await _db.fetchall(query)
+            else:
+                rows = await _db.fetchall("SELECT id, last_refresh_time FROM accounts WHERE enabled=1")
+
             for row in rows:
                 acc_id, last_refresh = row['id'], row['last_refresh_time']
                 should_refresh = False
@@ -250,6 +258,17 @@ ALLOWED_API_KEYS: List[str] = _parse_allowed_keys_env()
 MAX_ERROR_COUNT: int = int(os.getenv("MAX_ERROR_COUNT", "100"))
 TOKEN_COUNT_MULTIPLIER: float = float(os.getenv("TOKEN_COUNT_MULTIPLIER", "1.0"))
 
+# Lazy Account Pool settings
+LAZY_ACCOUNT_POOL_ENABLED: bool = os.getenv("LAZY_ACCOUNT_POOL_ENABLED", "false").lower() in ("true", "1", "yes")
+LAZY_ACCOUNT_POOL_SIZE: int = int(os.getenv("LAZY_ACCOUNT_POOL_SIZE", "20"))
+LAZY_ACCOUNT_POOL_REFRESH_OFFSET: int = int(os.getenv("LAZY_ACCOUNT_POOL_REFRESH_OFFSET", "10"))
+LAZY_ACCOUNT_POOL_ORDER_BY: str = os.getenv("LAZY_ACCOUNT_POOL_ORDER_BY", "created_at")
+LAZY_ACCOUNT_POOL_ORDER_DESC: bool = os.getenv("LAZY_ACCOUNT_POOL_ORDER_DESC", "false").lower() in ("true", "1", "yes")
+
+# Validate LAZY_ACCOUNT_POOL_ORDER_BY to prevent SQL injection
+if LAZY_ACCOUNT_POOL_ORDER_BY not in ["created_at", "id", "success_count"]:
+    LAZY_ACCOUNT_POOL_ORDER_BY = "created_at"
+
 def _is_console_enabled() -> bool:
     """检查是否启用管理控制台"""
     console_env = os.getenv("ENABLE_CONSOLE", "true").strip().lower()
@@ -267,8 +286,18 @@ def _extract_bearer(token_header: Optional[str]) -> Optional[str]:
         return token_header.split(" ", 1)[1].strip()
     return token_header.strip()
 
-async def _list_enabled_accounts() -> List[Dict[str, Any]]:
-    rows = await _db.fetchall("SELECT * FROM accounts WHERE enabled=1 ORDER BY created_at DESC")
+async def _list_enabled_accounts(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    if LAZY_ACCOUNT_POOL_ENABLED:
+        order_direction = "DESC" if LAZY_ACCOUNT_POOL_ORDER_DESC else "ASC"
+        query = f"SELECT * FROM accounts WHERE enabled=1 ORDER BY {LAZY_ACCOUNT_POOL_ORDER_BY} {order_direction}"
+        if limit:
+            query += f" LIMIT {limit}"
+        rows = await _db.fetchall(query)
+    else:
+        query = "SELECT * FROM accounts WHERE enabled=1 ORDER BY created_at DESC"
+        if limit:
+            query += f" LIMIT {limit}"
+        rows = await _db.fetchall(query)
     return [_row_to_dict(r) for r in rows]
 
 async def _list_disabled_accounts() -> List[Dict[str, Any]]:
@@ -311,7 +340,11 @@ async def resolve_account_for_key(bearer_key: Optional[str]) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     # Selection: random among enabled accounts
-    candidates = await _list_enabled_accounts()
+    if LAZY_ACCOUNT_POOL_ENABLED:
+        candidates = await _list_enabled_accounts(limit=LAZY_ACCOUNT_POOL_SIZE)
+    else:
+        candidates = await _list_enabled_accounts()
+
     if not candidates:
         raise HTTPException(status_code=401, detail="No enabled account available")
     return random.choice(candidates)
