@@ -3,6 +3,7 @@ import uuid
 import time
 import logging
 from datetime import datetime
+import os
 from typing import List, Dict, Any, Optional, Union
 
 try:
@@ -24,6 +25,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Debug mode for detailed logging of message conversion
+DEBUG_MESSAGE_CONVERSION = os.getenv("DEBUG_MESSAGE_CONVERSION", "false").lower() in ("true", "1", "yes")
 THINKING_HINT = "<antml:thinking_mode>interleaved</antml:thinking_mode><antml:max_thinking_length>16000</antml:max_thinking_length>"
 THINKING_START_TAG = "<thinking>"
 THINKING_END_TAG = "</thinking>"
@@ -302,6 +305,70 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
         
     return history
 
+def _validate_message_order(messages: List[ClaudeMessage]) -> Optional[str]:
+    """Validate that messages follow the correct user-assistant alternating pattern.
+    
+    Claude API requires messages to alternate between user and assistant roles.
+    Tool results must be in a user message that follows an assistant message with tool_use.
+    
+    Returns error message if validation fails, None otherwise.
+    """
+    if not messages:
+        return None
+    
+    # Check first message is from user
+    if messages[0].role != "user":
+        return "First message must be from user role"
+    
+    # Track expected role and tool_use state
+    prev_role = None
+    has_pending_tool_use = False
+    pending_tool_ids = set()
+    
+    for i, msg in enumerate(messages):
+        # Check alternating pattern
+        if prev_role is not None and msg.role == prev_role:
+            logger.warning(f"Message {i}: Found consecutive {msg.role} messages. This may cause issues with conversation flow.")
+        
+        if msg.role == "assistant" and isinstance(msg.content, list):
+            # Check for tool_use blocks
+            for block in msg.content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    has_pending_tool_use = True
+                    tool_id = block.get("id")
+                    if tool_id:
+                        pending_tool_ids.add(tool_id)
+        
+        elif msg.role == "user" and isinstance(msg.content, list):
+            # Check for tool_result blocks
+            found_tool_results = False
+            for block in msg.content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    found_tool_results = True
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id and tool_use_id in pending_tool_ids:
+                        pending_tool_ids.remove(tool_use_id)
+            
+            # If we have tool results, we should have had pending tool_use
+            if found_tool_results and not has_pending_tool_use and i > 0:
+                # Check if previous message was assistant with tool_use
+                if i > 0 and messages[i-1].role == "assistant":
+                    # This is OK, tool results following assistant message
+                    pass
+                else:
+                    logger.warning(f"Message {i}: Found tool_result but no recent tool_use from assistant. Message order may be incorrect.")
+            
+            if found_tool_results:
+                has_pending_tool_use = False  # Reset after processing results
+        
+        prev_role = msg.role
+    
+    # Warning if there are unclaimed tool_use calls
+    if pending_tool_ids:
+        logger.warning(f"Conversation ended with {len(pending_tool_ids)} tool_use calls without corresponding tool_result")
+    
+    return None
+
 def _detect_tool_call_loop(messages: List[ClaudeMessage], threshold: int = 3) -> Optional[str]:
     """Detect if the same tool is being called repeatedly (potential infinite loop)."""
     recent_tool_calls = []
@@ -318,6 +385,12 @@ def _detect_tool_call_loop(messages: List[ClaudeMessage], threshold: int = 3) ->
         last_calls = recent_tool_calls[-threshold:]
         if len(set(last_calls)) == 1:
             return f"Detected infinite loop: tool '{last_calls[0][0]}' called {threshold} times with same input"
+        
+        # Also check for similar tool names (same tool name, different or similar inputs)
+        tool_names_only = [call[0] for call in last_calls]
+        if len(set(tool_names_only)) == 1:
+            # Same tool called multiple times with different inputs
+            logger.warning(f"Tool '{tool_names_only[0]}' called {threshold} times recently with potentially different inputs. This might indicate a loop.")
 
     return None
 
@@ -325,6 +398,12 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     """Convert ClaudeRequest to Amazon Q request body."""
     if conversation_id is None:
         conversation_id = str(uuid.uuid4())
+
+    # Validate message order
+    validation_error = _validate_message_order(req.messages)
+    if validation_error:
+        logger.error(f"Message validation failed: {validation_error}")
+        # Don't raise error, just log warning as we can try to process anyway
 
     # Detect infinite tool call loops
     loop_error = _detect_tool_call_loop(req.messages, threshold=3)
@@ -476,7 +555,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
     aq_history = process_history(history_msgs, thinking_enabled=thinking_enabled, hint=THINKING_HINT)
     
     # 8. Final Body
-    return {
+    result = {
         "conversationState": {
             "conversationId": conversation_id,
             "history": aq_history,
@@ -486,3 +565,21 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
             "chatTriggerType": "MANUAL"
         }
     }
+    
+    # Debug logging
+    if DEBUG_MESSAGE_CONVERSION:
+        logger.info(f"=== Message Conversion Debug ===")
+        logger.info(f"Input: {len(req.messages)} Claude messages")
+        logger.info(f"Output: {len(aq_history)} history messages + 1 current message")
+        for i, msg in enumerate(aq_history):
+            if "userInputMessage" in msg:
+                has_tr = "toolResults" in msg["userInputMessage"].get("userInputMessageContext", {})
+                logger.info(f"  History[{i}]: USER (toolResults: {has_tr})")
+            elif "assistantResponseMessage" in msg:
+                has_tu = "toolUses" in msg["assistantResponseMessage"]
+                logger.info(f"  History[{i}]: ASSISTANT (toolUses: {has_tu})")
+        has_tr_current = "toolResults" in user_input_msg.get("userInputMessageContext", {})
+        logger.info(f"  Current: USER (toolResults: {has_tr_current})")
+        logger.info(f"================================")
+    
+    return result
