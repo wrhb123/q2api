@@ -298,15 +298,24 @@ def process_history(messages: List[ClaudeMessage], thinking_enabled: bool = Fals
                                 else:
                                     aq_content = [{"text": "Tool use was cancelled by the user"}]
 
+                            # Determine status: check both 'status' field and 'is_error' flag
+                            status = block.get("status")
+                            if not status:
+                                # If status not set, infer from is_error flag
+                                status = "error" if block.get("is_error") else "success"
+
                             # Merge if exists
                             existing = next((r for r in tool_results if r["toolUseId"] == tool_use_id), None)
                             if existing:
                                 existing["content"].extend(aq_content)
+                                # Update status if this is an error
+                                if status == "error":
+                                    existing["status"] = "error"
                             else:
                                 tool_results.append({
                                     "toolUseId": tool_use_id,
                                     "content": aq_content,
-                                    "status": block.get("status", "success")
+                                    "status": status
                                 })
                 text_content = "\n".join(text_parts)
             else:
@@ -503,14 +512,23 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
                             else:
                                 aq_content = [{"text": "Tool use was cancelled by the user"}]
 
+                        # Determine status: check both 'status' field and 'is_error' flag
+                        status = block.get("status")
+                        if not status:
+                            # If status not set, infer from is_error flag
+                            status = "error" if block.get("is_error") else "success"
+
                         existing = next((r for r in tool_results if r["toolUseId"] == tid), None)
                         if existing:
                             existing["content"].extend(aq_content)
+                            # Update status if this is an error
+                            if status == "error":
+                                existing["status"] = "error"
                         else:
                             tool_results.append({
                                 "toolUseId": tid,
                                 "content": aq_content,
-                                "status": block.get("status", "success")
+                                "status": status
                             })
             prompt_content = "\n".join(text_parts)
         else:
