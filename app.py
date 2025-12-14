@@ -611,7 +611,7 @@ async def claude_messages(req: ClaudeRequest, account: Dict[str, Any] = Depends(
             access = refreshed.get("accessToken")
             if not access:
                 raise HTTPException(status_code=502, detail="Access token unavailable after refresh")
-        
+
         # We use the modified send_chat_request which accepts raw_payload
         # and returns (text, text_stream, tracker, event_stream)
         return await send_chat_request(

@@ -76,23 +76,27 @@ def map_model_name(claude_model: str) -> str:
     Accepts both short names (e.g., claude-sonnet-4) and canonical names
     (e.g., claude-sonnet-4-20250514).
     """
-    DEFAULT_MODEL = "auto"
+    DEFAULT_MODEL = "claude-sonnet-4.5"
 
-    # Available models in the service
-    VALID_MODELS = {"auto", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"}
+    # Available models in the service (Amazon Q only supports these)
+    VALID_MODELS = {"auto", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5"}
 
     # Mapping from canonical names to short names
     CANONICAL_TO_SHORT = {
         "claude-sonnet-4-20250514": "claude-sonnet-4",
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
-        "claude-opus-4-5-20251101": "claude-opus-4.5",
+        # Amazon Q doesn't support Opus - map to Sonnet 4.5 (best available model)
+        "claude-opus-4-5-20251101": "claude-sonnet-4.5",
+        # Legacy Claude 3.5 Sonnet models
+        "claude-3-5-sonnet-20241022": "claude-sonnet-4.5",
+        "claude-3-5-sonnet-20240620": "claude-sonnet-4.5",
     }
 
     model_lower = claude_model.lower()
 
-    # Check if it's a valid short name
-    if model_lower in VALID_MODELS:
+    # Check if it's a valid short name (but not "auto" which Amazon Q doesn't accept)
+    if model_lower in VALID_MODELS and model_lower != "auto":
         return model_lower
 
     # Check if it's a canonical name
@@ -556,7 +560,7 @@ def convert_claude_to_amazonq_request(req: ClaudeRequest, conversation_id: Optio
 
     # 5. Model
     model_id = map_model_name(req.model)
-    
+
     # 6. User Input Message
     user_input_msg = {
         "content": formatted_content,
